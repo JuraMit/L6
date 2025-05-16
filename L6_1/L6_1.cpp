@@ -1,73 +1,245 @@
-﻿#include "Shader.h"
-#define GLEW_DLL
-#define GLFW_DLL
-
-#include "GL/glew.h"
-#include "GLFW/glfw3.h"
-#include "glm.hpp"
-#include "matrix_transform.hpp"
-#include "type_ptr.hpp"
-#include <iostream>
+#include "Shader.h"
 #include "Model.h"
+#include <GLFW/glfw3.h>
+#include <glm.hpp>
+#include <matrix_transform.hpp>
+#include <type_ptr.hpp>
+#include <iostream>
 
-const unsigned int SCR_WIDTH = 1024;
-const unsigned int SCR_HEIGHT = 768;
+const unsigned int SCR_WIDTH = 1280;
+const unsigned int SCR_HEIGHT = 720;
 
-glm::vec3 CameraPos = glm::vec3(0.0, 0.0, 5.0);
-glm::vec3 CameraFront = glm::vec3(0.0, 0.0, -1.0);
-glm::vec3 CameraUp = glm::vec3(0.0, 1.0, 0.0);
+glm::vec3 cameraPos = glm::vec3(0.0f, 0.0f, 5.0f);
+glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
+glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
 
-float lastX = SCR_WIDTH / 2;
-float lastY = SCR_HEIGHT / 2;
+float lastX = SCR_WIDTH / 2.0f;
+float lastY = SCR_HEIGHT / 2.0f;
 bool firstMouse = true;
-
 float yaw = -90.0f;
 float pitch = 0.0f;
 
-glm::mat4 projection = glm::perspective(
-    glm::radians(45.0f),
-    (float)SCR_WIDTH / (float)SCR_HEIGHT,
-    0.1f,
-    100.0f);
+float deltaTime = 0.0f;
+float lastFrame = 0.0f;
 
-glm::mat4 view = glm::lookAt(CameraPos, CameraPos + CameraFront, CameraUp);
-glm::mat4 modelMatrix = glm::mat4(1.0f);
+struct ObjectTransform {
+    glm::vec3 position = glm::vec3(0.0f);
+    glm::vec3 rotation = glm::vec3(0.0f); 
+    glm::vec3 scale = glm::vec3(1.0f);
+    glm::vec3 pivotPoint = glm::vec3(0.0f);
 
+    // Ограничения вращения 
+    struct {
+        float min = -180.0f;
+        float max = 180.0f;
+    } rotationZLimit; 
+
+    struct {
+        float min = -90.0f;
+        float max = 90.0f;
+    } rotationXLimit; 
+
+    struct {
+        float min = -90.0f;
+        float max = 90.0f;
+    } rotationYLimit; 
+};
+
+std::vector<ObjectTransform> objectTransforms;
+
+void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 void processInput(GLFWwindow* window);
 
-void settingVec3(Shader& shader, const char* name, const glm::vec3& value) {
-    glUniform3fv(glGetUniformLocation(shader.ID, name), 1, &value[0]);
+glm::mat4 calculateModelMatrix(int index) {
+    glm::mat4 model = glm::mat4(1.0f);
+
+    if (index == 0) {
+        return model;
+    }
+
+    if (index == 1) {
+        model = glm::translate(model, objectTransforms[1].pivotPoint);
+        model = glm::rotate(model, glm::radians(objectTransforms[1].rotation.z), glm::vec3(0.0f, 1.0f, 0.0f));
+        model = glm::translate(model, -objectTransforms[1].pivotPoint);
+        return model;
+    }
+
+    if (index == 2) {
+        model = glm::translate(model, objectTransforms[1].pivotPoint);
+        model = glm::rotate(model, glm::radians(objectTransforms[1].rotation.z), glm::vec3(0.0f, 1.0f, 0.0f));
+        model = glm::translate(model, -objectTransforms[1].pivotPoint);
+
+        model = glm::translate(model, objectTransforms[2].pivotPoint);
+        model = glm::rotate(model, glm::radians(objectTransforms[2].rotation.x), glm::vec3(0.0f, 0.0f, 1.0f));
+        model = glm::translate(model, -objectTransforms[2].pivotPoint);
+
+        return model;
+    }
+
+    if (index == 3) {
+        model = glm::translate(model, objectTransforms[1].pivotPoint);
+        model = glm::rotate(model, glm::radians(objectTransforms[1].rotation.z), glm::vec3(0.0f, 1.0f, 0.0f));
+        model = glm::translate(model, -objectTransforms[1].pivotPoint);
+
+        model = glm::translate(model, objectTransforms[2].pivotPoint);
+        model = glm::rotate(model, glm::radians(objectTransforms[2].rotation.x), glm::vec3(0.0f, 0.0f, 1.0f));
+        model = glm::translate(model, -objectTransforms[2].pivotPoint);
+
+        model = glm::translate(model, objectTransforms[3].pivotPoint);
+        model = glm::rotate(model, glm::radians(objectTransforms[3].rotation.y), glm::vec3(0.0f, 0.0f, 1.0f));
+        model = glm::translate(model, -objectTransforms[3].pivotPoint);
+
+        return model;
+    }
+
+    return model;
 }
 
-void settingFloat(Shader& shader, const char* name, float value) {
-    glUniform1f(glGetUniformLocation(shader.ID, name), value);
+int main() {
+    glfwInit();
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "3D Model Transformations", NULL, NULL);
+    if (window == NULL) {
+        std::cerr << "Failed to create GLFW window" << std::endl;
+        glfwTerminate();
+        return -1;
+    }
+    glfwMakeContextCurrent(window);
+    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+    glfwSetCursorPosCallback(window, mouse_callback);
+    glfwSetScrollCallback(window, scroll_callback);
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+
+    glewExperimental = GL_TRUE;
+    if (glewInit() != GLEW_OK) {
+        std::cerr << "Failed to initialize GLEW" << std::endl;
+        return -1;
+    }
+
+    glEnable(GL_DEPTH_TEST);
+
+    Shader shader("vertex_sheder.glsl", "fragment_shader.glsl");
+    Model ourModel("KG3.obj");
+
+    objectTransforms.resize(4);
+
+    objectTransforms[1].pivotPoint = glm::vec3(0.0f, 0.0f, 0.0f); // Точка вращения платформы
+    objectTransforms[2].pivotPoint = glm::vec3(-0.1f, 0.38f, 0.0f); // Точка вращения первого рычага
+    objectTransforms[3].pivotPoint = glm::vec3(-0.12f, 0.96f, 0.0f); // Точка вращения второго рычага  
+
+    // Установка ограничений вращения
+    objectTransforms[1].rotationZLimit = { -180.0f, 180.0f }; // Полный оборот
+    objectTransforms[2].rotationXLimit = { 0.0f, 95.0f };   // Ограниченный вертикальный поворот
+    objectTransforms[3].rotationYLimit = { -180.0f, 60.0f };   // Ограниченный вертикальный поворот
+
+    shader.use();
+    shader.setVec3("light.position", glm::vec3(1.2f, 1.0f, 2.0f));
+    shader.setVec3("light.ambient", glm::vec3(1.0f, 0.8f, 0.6f));
+    shader.setVec3("light.diffuse", glm::vec3(1.0f, 0.8f, 0.6f));
+    shader.setVec3("light.specular", glm::vec3(1.0f));
+    shader.setVec3("material.ambient", glm::vec3(0.5f, 0.5f, 0.5f));
+    shader.setVec3("material.diffuse", glm::vec3(1.0f, 1.0f, 0.0f));
+    shader.setVec3("material.specular", glm::vec3(1.0f, 1.0f, 1.0f));
+    shader.setFloat("material.shininess", 32.0f);
+
+    while (!glfwWindowShouldClose(window)) {
+        float currentFrame = glfwGetTime();
+        deltaTime = currentFrame - lastFrame;
+        lastFrame = currentFrame;
+
+        processInput(window);
+
+        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        shader.use();
+        shader.setVec3("viewPos", cameraPos);
+
+        glm::mat4 projection = glm::perspective(glm::radians(45.0f),
+            (float)SCR_WIDTH / (float)SCR_HEIGHT,
+            0.1f, 100.0f);
+        glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
+        shader.setMat4("projection", projection);
+        shader.setMat4("view", view);
+
+        for (size_t i = 0; i < ourModel.meshTransforms.size(); ++i) {
+            ourModel.meshTransforms[i] = calculateModelMatrix(i);
+        }
+
+        ourModel.Draw(shader);
+
+        glfwSwapBuffers(window);
+        glfwPollEvents();
+    }
+
+    glfwTerminate();
+    return 0;
 }
 
-void processInput(GLFWwindow* window)
-{
+void processInput(GLFWwindow* window) {
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
 
-    float cameraSpeed = 2.5f * 0.016f;
-
+    float cameraSpeed = 2.5f * deltaTime;
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-        CameraPos += cameraSpeed * CameraFront;
+        cameraPos += cameraSpeed * cameraFront;
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-        CameraPos -= cameraSpeed * CameraFront;
+        cameraPos -= cameraSpeed * cameraFront;
     if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-        CameraPos -= glm::normalize(glm::cross(CameraFront, CameraUp)) * cameraSpeed;
+        cameraPos -= glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-        CameraPos += glm::normalize(glm::cross(CameraFront, CameraUp)) * cameraSpeed;
+        cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
+
+    float rotateSpeed = 50.0f * deltaTime;
+
+    // Управление горизонтальным поворотом (Z) - клавиши Y/H
+    if (glfwGetKey(window, GLFW_KEY_Y) == GLFW_PRESS) {
+        objectTransforms[1].rotation.z += rotateSpeed;
+        if (objectTransforms[1].rotation.z > objectTransforms[1].rotationZLimit.max)
+            objectTransforms[1].rotation.z = objectTransforms[1].rotationZLimit.max;
+    }
+    if (glfwGetKey(window, GLFW_KEY_H) == GLFW_PRESS) {
+        objectTransforms[1].rotation.z -= rotateSpeed;
+        if (objectTransforms[1].rotation.z < objectTransforms[1].rotationZLimit.min)
+            objectTransforms[1].rotation.z = objectTransforms[1].rotationZLimit.min;
+    }
+
+    // Управление первым вертикальным поворотом (X) - клавиши U/J
+    if (glfwGetKey(window, GLFW_KEY_U) == GLFW_PRESS) {
+        objectTransforms[2].rotation.x += rotateSpeed;
+        if (objectTransforms[2].rotation.x > objectTransforms[2].rotationXLimit.max)
+            objectTransforms[2].rotation.x = objectTransforms[2].rotationXLimit.max;
+    }
+    if (glfwGetKey(window, GLFW_KEY_J) == GLFW_PRESS) {
+        objectTransforms[2].rotation.x -= rotateSpeed;
+        if (objectTransforms[2].rotation.x < objectTransforms[2].rotationXLimit.min)
+            objectTransforms[2].rotation.x = objectTransforms[2].rotationXLimit.min;
+    }
+
+    // Управление вторым вертикальным поворотом (Y) - клавиши I/K
+    if (glfwGetKey(window, GLFW_KEY_I) == GLFW_PRESS) {
+        objectTransforms[3].rotation.y += rotateSpeed;
+        if (objectTransforms[3].rotation.y > objectTransforms[3].rotationYLimit.max)
+            objectTransforms[3].rotation.y = objectTransforms[3].rotationYLimit.max;
+    }
+    if (glfwGetKey(window, GLFW_KEY_K) == GLFW_PRESS) {
+        objectTransforms[3].rotation.y -= rotateSpeed;
+        if (objectTransforms[3].rotation.y < objectTransforms[3].rotationYLimit.min)
+            objectTransforms[3].rotation.y = objectTransforms[3].rotationYLimit.min;
+    }
 }
 
-void mouse_callback(GLFWwindow* window, double xposIn, double yposIn)
-{
-    float xpos = static_cast<float>(xposIn);
-    float ypos = static_cast<float>(yposIn);
+void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
+    glViewport(0, 0, width, height);
+}
 
-    if (firstMouse)
-    {
+void mouse_callback(GLFWwindow* window, double xpos, double ypos) {
+    if (firstMouse) {
         lastX = xpos;
         lastY = ypos;
         firstMouse = false;
@@ -77,6 +249,7 @@ void mouse_callback(GLFWwindow* window, double xposIn, double yposIn)
     float yoffset = lastY - ypos;
     lastX = xpos;
     lastY = ypos;
+
     float sensitivity = 0.1f;
     xoffset *= sensitivity;
     yoffset *= sensitivity;
@@ -93,90 +266,8 @@ void mouse_callback(GLFWwindow* window, double xposIn, double yposIn)
     front.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
     front.y = sin(glm::radians(pitch));
     front.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
-    CameraFront = glm::normalize(front);
+    cameraFront = glm::normalize(front);
 }
 
-int main()
-{
-    if (!glfwInit()) {
-        std::cerr << "Failed to initialize GLFW" << std::endl;
-        return -1;
-    }
-
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "3D Model Renderer", NULL, NULL);
-    if (!window) {
-        std::cerr << "Failed to create GLFW window" << std::endl;
-        glfwTerminate();
-        return -1;
-    }
-
-    glfwMakeContextCurrent(window);
-    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-    glfwSetCursorPosCallback(window, mouse_callback);
-
-    glewExperimental = GL_TRUE;
-    if (glewInit() != GLEW_OK) {
-        std::cerr << "Failed to initialize GLEW" << std::endl;
-        glfwTerminate();
-        return -1;
-    }
-
-    glEnable(GL_DEPTH_TEST);
-
-    Shader shader("vertex_sheder.glsl", "fragment_shader.glsl");
-    Model model("KG3.obj");
-
-
-    glm::vec3 lightColor = glm::vec3(1.0f, 1.0f, 1.0f);
-    glm::vec3 lightAmbient = lightColor * glm::vec3(0.1f);
-    glm::vec3 lightDiffuse = lightColor * glm::vec3(0.8f);
-    glm::vec3 lightSpecular = lightColor;
-    glm::vec3 lightPosition = glm::vec3(2.0f, 2.0f, 2.0f);
-
-    glm::vec3 matAmbient = glm::vec3(1.0, 0.5, 0.31);
-    glm::vec3 matDiffuse = glm::vec3(1.0, 0.5, 0.31);
-    glm::vec3 matSpecular = glm::vec3(0.5, 0.5, 0.5);
-    float matShininess = 32.0;
-
-    while (!glfwWindowShouldClose(window)) {
-        processInput(window);
-
-        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        view = glm::lookAt(CameraPos, CameraPos + CameraFront, CameraUp);
-
-        shader.use();
-
-        shader.setMat4("view", glm::value_ptr(view));
-        shader.setMat4("projection", glm::value_ptr(projection));
-        shader.setMat4("model", glm::value_ptr(modelMatrix));
-
-        settingVec3(shader, "Light_1.ambient", lightAmbient);
-        settingVec3(shader, "Light_1.diffuse", lightDiffuse);
-        settingVec3(shader, "Light_1.specular", lightSpecular);
-        settingVec3(shader, "Light_1.position", lightPosition);
-
-        settingVec3(shader, "Mat_1.ambient", matAmbient);
-        settingVec3(shader, "Mat_1.diffuse", matDiffuse);
-        settingVec3(shader, "Mat_1.specular", matSpecular);
-        settingFloat(shader, "Mat_1.shininess", matShininess);
-
-        settingVec3(shader, "viewPos", CameraPos);
-
-        glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(modelMatrix)));
-        shader.setMat3("normalMatrix", normalMatrix);
-
-        model.Draw(shader);
-
-        glfwSwapBuffers(window);
-        glfwPollEvents();
-    }
-
-    glfwTerminate();
-    return 0;
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
 }
